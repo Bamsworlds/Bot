@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="GoldChip Bot">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0f14">
+<title>GoldChip Bot</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0f14;--card:#151b23;--tx:#e8edf3;--mu:#8b97a6;--g:#2ecc71;--r:#ff5c5c;--y:#f5c542;--ac:#4c8dff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px -apple-system,system-ui,sans-serif;padding:env(safe-area-inset-top) 14px calc(env(safe-area-inset-bottom) + 24px)}
+h1{font-size:22px;margin:16px 0 4px}
+.sub{color:var(--mu);font-size:13px;margin-bottom:12px}
+.card{background:var(--card);border-radius:14px;padding:14px;margin:12px 0}
+.row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #222b36}
+.row:last-child{border:0}
+.big{font-size:30px;font-weight:700}
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.mu{color:var(--mu);font-size:13px}
+button{background:var(--ac);color:#fff;border:0;border-radius:12px;padding:13px 16px;font-size:16px;font-weight:600;width:100%;margin-top:8px}
+button.s{background:#263041}button.d{background:var(--r)}
+button.sm{width:auto;padding:7px 12px;font-size:14px;margin:0}
+input{width:100%;padding:12px;border-radius:10px;border:1px solid #2a3442;background:#0f141b;color:var(--tx);font-size:16px;margin:6px 0}
+label{display:flex;align-items:center;gap:8px;margin:8px 0}
+label input{width:auto;margin:0}
+.tag{font-size:12px;font-weight:700;padding:3px 8px;border-radius:8px;background:#263041}
+#msg{white-space:pre-wrap;font-size:13px;color:var(--mu)}
+</style>
+</head>
+<body>
+<h1>GoldChip Bot</h1>
+<div class="sub">Gold &amp; semiconductor trend bot · <span id="mode"></span></div>
+
+<div class="card" id="acct">
+  <div class="mu">Equity</div>
+  <div class="big" id="eq">—</div>
+  <div class="mu" id="bp"></div>
+  <button id="refresh">Refresh</button>
+</div>
+
+<div class="card">
+  <b>Signals</b>
+  <div id="sig" class="mu">Tap Scan to analyze.</div>
+  <button id="scan" class="s">Scan market</button>
+  <label><input type="checkbox" id="live"> Send real orders (off = dry run)</label>
+  <button id="exec">Execute signals</button>
+</div>
+
+<div class="card">
+  <b>Positions</b>
+  <div id="pos" class="mu">—</div>
+  <button id="flat" class="d">Close ALL positions</button>
+</div>
+
+<div class="card">
+  <b>Settings</b>
+  <input id="key" placeholder="Alpaca API key" autocapitalize="off" autocorrect="off">
+  <input id="sec" placeholder="Alpaca secret" type="password">
+  <label><input type="checkbox" id="paper" checked> Paper trading</label>
+  <button id="save" class="s">Save</button>
+  <div class="mu">Keys are stored only on this device. Use paper keys first.</div>
+</div>
+
+<div class="card"><div id="msg"></div></div>
+
+<script>
+const GOLD=["GLD","GDX"],CHIPS=["SMH","NVDA","AMD","AVGO"],SYMS=[...GOLD,...CHIPS];
+const FAST=20,SLOW=50,POS_PCT=0.08,MAX_INV=0.60,STOP=-0.08;
+const $=id=>document.getElementById(id);
+let cfg={key:"",sec:"",paper:true},plan=[];
+try{cfg=Object.assign(cfg,JSON.parse(localStorage.getItem("gcb")||"{}"))}catch(e){}
+$("key").value=cfg.key;$("sec").value=cfg.sec;$("paper").checked=cfg.paper;
+const money=n=>"$"+Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
+const log=t=>{$("msg").textContent=t+"\n"+$("msg").textContent.slice(0,800)};
+const base=()=>cfg.paper?"https://paper-api.alpaca.markets":"https://api.alpaca.markets";
+const hdr=()=>({"APCA-API-KEY-ID":cfg.key,"APCA-API-SECRET-KEY":cfg.sec,"Content-Type":"application/json"});
+async function api(path,opt={}){
+  const r=await fetch(base()+path,{headers:hdr(),...opt});
+  if(!r.ok)throw new Error(r.status+" "+(await r.text()).slice(0,120));
+  return r.status===204?null:r.json();
+}
+function setMode(){$("mode").textContent=cfg.paper?"PAPER":"LIVE";$("mode").className=cfg.paper?"y":"r"}
+setMode();
+
+$("save").onclick=()=>{
+  cfg={key:$("key").value.trim(),sec:$("sec").value.trim(),paper:$("paper").checked};
+  try{localStorage.setItem("gcb",JSON.stringify(cfg))}catch(e){}
+  setMode();log("Saved.");refresh();
+};
+
+async function refresh(){
+  if(!cfg.key)return log("Add your API keys in Settings.");
+  try{
+    const a=await api("/v2/account");
+    $("eq").textContent=money(a.equity);
+    $("bp").textContent="Buying power "+money(a.buying_power);
+    const ps=await api("/v2/positions");
+    $("pos").innerHTML=ps.length?ps.map(p=>{
+      const pl=parseFloat(p.unrealized_plpc)*100;
+      return `<div class="row"><div><b>${p.symbol}</b><div class="mu">${money(p.market_value)}</div></div>
+      <div class="${pl>=0?"g":"r"}">${pl.toFixed(1)}%</div>
+      <button class="sm d" onclick="closePos('${p.symbol}')">Close</button></div>`}).join(""):"No open positions.";
+    window._ps=ps;window._eq=parseFloat(a.equity);
+  }catch(e){log("Error: "+e.message)}
+}
+async function closePos(s){
+  if(!confirm("Close "+s+"?"))return;
+  try{await api("/v2/positions/"+s,{method:"DELETE"});log("Closed "+s);refresh()}catch(e){log("Error: "+e.message)}
+}
+$("flat").onclick=async()=>{
+  if(!confirm("Close ALL positions?"))return;
+  try{await api("/v2/positions",{method:"DELETE"});log("Closing all positions.");setTimeout(refresh,1500)}catch(e){log("Error: "+e.message)}
+};
+$("refresh").onclick=refresh;
+
+const mean=a=>a.reduce((x,y)=>x+y,0)/a.length;
+$("scan").onclick=async()=>{
+  if(!cfg.key)return log("Add your API keys in Settings.");
+  try{
+    await refresh();
+    const start=new Date(Date.now()-150*864e5).toISOString();
+    const url=`https://data.alpaca.markets/v2/stocks/bars?symbols=${SYMS.join(",")}&timeframe=1Day&start=${start}&limit=1000&feed=iex`;
+    const r=await fetch(url,{headers:hdr()});
+    if(!r.ok)throw new Error(r.status+" data fetch failed");
+    const bars=(await r.json()).bars||{};
+    const held=Object.fromEntries((window._ps||[]).map(p=>[p.symbol,p]));
+    let invested=(window._ps||[]).reduce((s,p)=>s+parseFloat(p.market_value),0);
+    plan=[];
+    for(const s of SYMS){
+      const c=(bars[s]||[]).map(b=>b.c);
+      if(c.length<SLOW){plan.push({s,act:"NO DATA"});continue}
+      const f=mean(c.slice(-FAST)),sl=mean(c.slice(-SLOW)),px=c[c.length-1],h=held[s];
+      let act="HOLD";
+      if(h){
+        const pl=parseFloat(h.unrealized_plpc);
+        if(pl<=STOP)act="SELL";else if(f<sl||px<sl)act="SELL";
+      }else if(f>sl&&px>sl){
+        const size=window._eq*POS_PCT;
+        if(invested+size<=window._eq*MAX_INV){act="BUY";invested+=size}else act="SKIP (cap)";
+      }else act="WAIT";
+      plan.push({s,act,px,trend:f>sl?"up":"down"});
+    }
+    $("sig").innerHTML=plan.map(p=>`<div class="row"><div><b>${p.s}</b> <span class="mu">${p.px?"$"+p.px.toFixed(2)+" · "+p.trend:""}</span></div>
+      <span class="tag ${p.act==="BUY"?"g":p.act==="SELL"?"r":""}">${p.act}</span></div>`).join("");
+  }catch(e){log("Error: "+e.message)}
+};
+
+$("exec").onclick=async()=>{
+  const todo=plan.filter(p=>p.act==="BUY"||p.act==="SELL");
+  if(!todo.length)return log("Nothing to execute. Scan first.");
+  const live=$("live").checked;
+  if(live&&!confirm("Send "+todo.length+" order(s) to "+(cfg.paper?"PAPER":"LIVE")+" account?"))return;
+  for(const p of todo){
+    if(!live){log("[DRY RUN] "+p.act+" "+p.s);continue}
+    try{
+      if(p.act==="SELL")await api("/v2/positions/"+p.s,{method:"DELETE"});
+      else await api("/v2/orders",{method:"POST",body:JSON.stringify({symbol:p.s,notional:(window._eq*POS_PCT).toFixed(2),side:"buy",type:"market",time_in_force:"day"})});
+      log(p.act+" "+p.s+" sent");
+    }catch(e){log("Error "+p.s+": "+e.message)}
+  }
+  setTimeout(refresh,2000);
+};
+refresh();
+</script>
+</body>
+</html>
